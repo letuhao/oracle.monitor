@@ -10,6 +10,41 @@ Read-only monitoring tool for Oracle 19+ databases. Monitors session usage, reso
 - ✅ **Historical logging** - CSV export for analysis
 - ✅ **Top sessions identification** - Find resource-intensive sessions
 - ✅ **Blocking detection** - Identify sessions blocking others
+- ✅ **Streamlit dashboard** - Interactive charts and drill-downs
+
+### Metrics & Insights
+
+The monitor collects and visualizes the following signals every interval:
+
+- **Session load**: total sessions, active/inactive split, blocked session count
+- **Resource pressure**: CPU seconds, logical vs physical reads (MB), IO wait breakdown
+- **Blocking/locking**: blocker SID/user, wait events, chains depth
+- **Top SQL / sessions**: highest CPU/time consumers with username/SID and SQL hash
+- **Trend lines**: rolling averages and sparkline history for each major metric
+- **Alerts**: thresholds for max sessions, active sessions, blocked sessions, CPU% with WARN/CRITICAL badges in the GUI and JSONL logs
+
+### GUI Metric Inventory
+
+The Streamlit dashboard (`oracle_monitor_gui.py`) exposes **18 metric families** end‑to‑end:
+
+1. **Session overview** – `get_session_overview()` returns total/active/inactive/blocked sessions plus logical & physical reads and CPU seconds for the summary cards.
+2. **Session status mix** – `get_session_by_status()` feeds the pie chart of ACTIVE/INACTIVE/OTHER counts.
+3. **Historical persistence** – the embedded `HistoryStore` captures every sample (sessions, IO, waits, tablespaces, undo, redo, plans) for the SQLite explorer tab.
+4. **Host metrics** – `get_host_metrics()` tracks host CPU%, memory%, process CPU/memory, swap, load average, and logical core count.
+5. **Resource limits & alerts** – `get_resource_limits()` and the configured thresholds compare live usage to limits for processes, sessions, PGA, SGA, and tablespace pct.
+6. **Top sessions** – `get_top_sessions()` surfaces per‑session logical reads, CPU seconds, SQL text, plan hash, and wait event.
+7. **High CPU sessions** – `get_top_cpu_sessions()` highlights CPU‑heavy work, including SQL/module/action metadata.
+8. **Session resource usage** – `get_session_resource_usage()` captures CPU(s), PGA MB/max MB, OS thread id, machine, and SQL info.
+9. **Grouped swarm analysis** – `group_sessions()` aggregates counts, total CPU, and total PGA by user, program, module, or SQL ID.
+10. **Blocking topology** – `get_blocking_sessions()` plus `get_blocking_chains()` report blockers, blocked SIDs, wait events, wait seconds, and chain depth.
+11. **Tablespace utilization** – `get_tablespace_usage()` measures used/allocated/max MB, free MB, pct used, autoextend headroom, and file counts.
+12. **Storage I/O hot spots** – `get_io_sessions()` records per‑session read/write/temp MB and related SQL text.
+13. **Wait event profile** – `get_wait_events()` aggregates top non‑idle waits with sessions, total wait seconds, and avg wait ms.
+14. **Temp usage** – `get_temp_usage()` shows tablespace, segment type, used MB, and owning session for temp consumers.
+15. **Undo health** – `get_undo_metrics()` reports undo blocks, transactions, max query length, ORA‑01555 / no‑space counts, and tuned retention.
+16. **Redo / log writer** – `get_redo_metrics()` exposes redo size, writes, write time, and log file sync waits/time.
+17. **Plan churn** – `get_plan_churn()` lists SQL IDs, plan hashes, executions, elapsed seconds, buffer gets, disk reads, rows processed, and last active time.
+18. **Storage history explorer** – the SQLite tab rehydrates sessions, tablespaces, IO, waits, temp, undo, redo, and plan data for retrospectives.
 
 ## Technology Stack
 
@@ -24,6 +59,39 @@ Read-only monitoring tool for Oracle 19+ databases. Monitors session usage, reso
   - Cross-platform support
   - Rich ecosystem
   - Excellent GUI libraries (Streamlit)
+
+## Quick Start (GUI)
+
+1. **Clone and install**
+   ```bash
+   git clone https://github.com/YourGitHubUsername/oracle.monitor.git
+   cd oracle.monitor
+   python -m venv .venv && .venv\\Scripts\\activate  # PowerShell (Windows)
+   source .venv/bin/activate                          # bash/zsh (macOS/Linux)
+   pip install -r requirements.txt
+   ```
+   
+   > ⚠️ **Note**: Replace `YourGitHubUsername` with your actual GitHub username before publishing
+2. **Create a local config**
+   - Copy `config.example.json` to `config.local.json`
+   - Fill in your Oracle connection details (read-only user recommended)
+   - Export the path so the app can find it:
+     ```powershell
+     $env:ORACLE_MONITOR_CONFIG="config.local.json"
+     ```
+     ```bash
+     export ORACLE_MONITOR_CONFIG=config.local.json
+     ```
+3. **Run the GUI dashboard**
+   ```bash
+   streamlit run oracle_monitor_gui.py
+   ```
+   or use the launchers: `run_gui.bat` (Windows) / `run_gui.sh` (macOS/Linux).
+4. **Verify data remains local**
+   - Logs land in `logs/` (ignored by Git)
+   - `config.local.json` stays untracked (rename if needed, or add to `.git/info/exclude`)
+
+For CLI usage or advanced setup, keep reading.
 
 ## Installation
 
@@ -48,7 +116,7 @@ pip install oracledb
 
 ### 3. Configure Database Connection
 
-Edit `config.json`:
+Create a private copy based on `config.example.json` (e.g., `config.local.json`) and point the app to it with the `ORACLE_MONITOR_CONFIG` environment variable. Avoid storing real credentials in `config.json` to keep them out of Git.
 
 ```json
 {
