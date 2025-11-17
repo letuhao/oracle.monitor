@@ -1,0 +1,22 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 1521,
+    "service_name": "ORCL",
+    "username": "your_username",
+    "password": "your_password"
+  },
+  "monitoring": {
+    "interval_seconds": 60,
+    "duration_minutes": 30,
+    "log_file": "monitor_log.txt",
+    "csv_output": "session_history.csv",
+    "alert_thresholds": {
+      "max_sessions": 500,
+      "max_active_sessions": 200,
+      "max_blocked_sessions": 10,
+      "max_cpu_percent": 80
+    }
+  }
+}
+
