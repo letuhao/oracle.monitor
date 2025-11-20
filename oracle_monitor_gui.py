@@ -3031,7 +3031,7 @@ def main():
                     metrics_history = monitor.history_store.fetch_recent_metrics(history_limit)
                     if metrics_history:
                         df_sqlite_metrics = pd.DataFrame(metrics_history)
-                        df_sqlite_metrics['timestamp'] = pd.to_datetime(df_sqlite_metrics['timestamp'])
+                        df_sqlite_metrics['timestamp'] = pd.to_datetime(df_sqlite_metrics['timestamp'], format='ISO8601')
                         st.markdown("**Recent Metrics (SQLite)**")
                         st.dataframe(df_sqlite_metrics.sort_values('timestamp', ascending=False), hide_index=True, width='stretch')
 
@@ -3060,7 +3060,7 @@ def main():
                     )
                     if ts_history:
                         df_ts_history = pd.DataFrame(ts_history)
-                        df_ts_history['timestamp'] = pd.to_datetime(df_ts_history['timestamp'])
+                        df_ts_history['timestamp'] = pd.to_datetime(df_ts_history['timestamp'], format='ISO8601')
                         st.dataframe(df_ts_history.sort_values(['tablespace', 'timestamp'], ascending=False),
                                      hide_index=True,
                                      width='stretch')
@@ -3081,7 +3081,7 @@ def main():
                     io_history = monitor.history_store.fetch_io_history(history_limit)
                     if io_history:
                         df_io_history = pd.DataFrame(io_history)
-                        df_io_history['timestamp'] = pd.to_datetime(df_io_history['timestamp'])
+                        df_io_history['timestamp'] = pd.to_datetime(df_io_history['timestamp'], format='ISO8601')
                         st.dataframe(df_io_history.sort_values('timestamp', ascending=False),
                                      hide_index=True,
                                      width='stretch')
@@ -3102,7 +3102,7 @@ def main():
                     wait_history = monitor.history_store.fetch_wait_history(history_limit)
                     if wait_history:
                         df_wait_hist = pd.DataFrame(wait_history)
-                        df_wait_hist['timestamp'] = pd.to_datetime(df_wait_hist['timestamp'])
+                        df_wait_hist['timestamp'] = pd.to_datetime(df_wait_hist['timestamp'], format='ISO8601')
                         st.dataframe(df_wait_hist.sort_values('timestamp', ascending=False),
                                      hide_index=True,
                                      width='stretch')
@@ -3123,7 +3123,7 @@ def main():
                     temp_history = monitor.history_store.fetch_temp_history(history_limit)
                     if temp_history:
                         df_temp_hist = pd.DataFrame(temp_history)
-                        df_temp_hist['timestamp'] = pd.to_datetime(df_temp_hist['timestamp'])
+                        df_temp_hist['timestamp'] = pd.to_datetime(df_temp_hist['timestamp'], format='ISO8601')
                         st.dataframe(df_temp_hist.sort_values('timestamp', ascending=False),
                                      hide_index=True,
                                      width='stretch')
@@ -3135,7 +3135,7 @@ def main():
                     undo_history = monitor.history_store.fetch_undo_history(history_limit)
                     if undo_history:
                         df_undo_hist = pd.DataFrame(undo_history)
-                        df_undo_hist['timestamp'] = pd.to_datetime(df_undo_hist['timestamp'])
+                        df_undo_hist['timestamp'] = pd.to_datetime(df_undo_hist['timestamp'], format='ISO8601')
                         st.dataframe(df_undo_hist.sort_values('timestamp', ascending=False),
                                      hide_index=True,
                                      width='stretch')
@@ -3147,7 +3147,7 @@ def main():
                     redo_history = monitor.history_store.fetch_redo_history(history_limit)
                     if redo_history:
                         df_redo_hist = pd.DataFrame(redo_history)
-                        df_redo_hist['timestamp'] = pd.to_datetime(df_redo_hist['timestamp'])
+                        df_redo_hist['timestamp'] = pd.to_datetime(df_redo_hist['timestamp'], format='ISO8601')
                         st.dataframe(df_redo_hist.sort_values('timestamp', ascending=False),
                                      hide_index=True,
                                      width='stretch')
@@ -3159,7 +3159,7 @@ def main():
                     plan_history = monitor.history_store.fetch_plan_history(history_limit)
                     if plan_history:
                         df_plan_hist = pd.DataFrame(plan_history)
-                        df_plan_hist['timestamp'] = pd.to_datetime(df_plan_hist['timestamp'])
+                        df_plan_hist['timestamp'] = pd.to_datetime(df_plan_hist['timestamp'], format='ISO8601')
                         st.dataframe(df_plan_hist.sort_values('timestamp', ascending=False),
                                      hide_index=True,
                                      width='stretch')
