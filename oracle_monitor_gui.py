@@ -98,6 +98,17 @@ plan_logger.setLevel(logging.INFO)
 plan_handler = logging.FileHandler(LOG_DIR / 'plan_churn.jsonl', encoding='utf-8')
 plan_logger.addHandler(plan_handler)
 
+# Traffic logs
+traffic_logger = logging.getLogger('oracle_monitor_traffic')
+traffic_logger.setLevel(logging.INFO)
+traffic_handler = logging.FileHandler(LOG_DIR / 'traffic_sessions.jsonl', encoding='utf-8')
+traffic_logger.addHandler(traffic_handler)
+
+traffic_groups_logger = logging.getLogger('oracle_monitor_traffic_groups')
+traffic_groups_logger.setLevel(logging.INFO)
+traffic_groups_handler = logging.FileHandler(LOG_DIR / 'traffic_groups.jsonl', encoding='utf-8')
+traffic_groups_logger.addHandler(traffic_groups_handler)
+
 # Configure page
 st.set_page_config(
     page_title="Oracle Database Monitor",
@@ -297,6 +308,64 @@ class HistoryStore:
         )
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_plan_history_sql ON plan_history(sql_id)"
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS all_sessions_traffic_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sample_id TEXT,
+                timestamp TEXT NOT NULL,
+                sid INTEGER,
+                serial INTEGER,
+                username TEXT,
+                program TEXT,
+                machine TEXT,
+                status TEXT,
+                logon_time TEXT,
+                last_call_et INTEGER,
+                logical_reads_mb REAL,
+                physical_reads_mb REAL,
+                cpu_seconds REAL,
+                wait_event TEXT,
+                wait_time INTEGER,
+                seconds_in_wait INTEGER,
+                sql_id TEXT,
+                blocking_session INTEGER,
+                os_process TEXT
+            )
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traffic_history_ts ON all_sessions_traffic_history(timestamp)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traffic_history_sid ON all_sessions_traffic_history(sid)"
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS grouped_traffic_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sample_id TEXT,
+                timestamp TEXT NOT NULL,
+                username TEXT,
+                program TEXT,
+                status TEXT,
+                session_count INTEGER,
+                active_count INTEGER,
+                inactive_count INTEGER,
+                total_logical_reads_mb REAL,
+                total_physical_reads_mb REAL,
+                total_cpu_seconds REAL,
+                machine_count INTEGER,
+                blocked_count INTEGER
+            )
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_grouped_traffic_ts ON grouped_traffic_history(timestamp)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_grouped_traffic_user ON grouped_traffic_history(username)"
         )
         conn.commit()
         conn.close()
@@ -925,6 +994,170 @@ class HistoryStore:
         ]
     # --- END: fetch_plan_history ---
 
+    # --- START: insert_all_sessions_traffic ---
+    def insert_all_sessions_traffic(
+        self,
+        sample_id: str,
+        timestamp_iso: str,
+        sessions: List[Dict]
+    ):
+        if not sessions:
+            return
+        conn = self._connect()
+        cursor = conn.cursor()
+        for session in sessions:
+            cursor.execute(
+                """
+                INSERT INTO all_sessions_traffic_history (
+                    sample_id, timestamp, sid, serial, username, program, machine, status,
+                    logon_time, last_call_et, logical_reads_mb, physical_reads_mb, cpu_seconds,
+                    wait_event, wait_time, seconds_in_wait, sql_id, blocking_session, os_process
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sample_id,
+                    timestamp_iso,
+                    session.get('SID'),
+                    session.get('Serial#'),
+                    session.get('Username'),
+                    session.get('Program'),
+                    session.get('Machine'),
+                    session.get('Status'),
+                    session.get('Logon Time'),
+                    session.get('Last Call (sec)'),
+                    session.get('Logical Reads (MB)'),
+                    session.get('Physical Reads (MB)'),
+                    session.get('CPU (seconds)'),
+                    session.get('Wait Event'),
+                    session.get('Wait Time'),
+                    session.get('Seconds in Wait'),
+                    session.get('SQL ID'),
+                    session.get('Blocking Session'),
+                    session.get('OS Process')
+                )
+            )
+        conn.commit()
+        conn.close()
+    # --- END: insert_all_sessions_traffic ---
+
+    # --- START: insert_grouped_traffic ---
+    def insert_grouped_traffic(
+        self,
+        sample_id: str,
+        timestamp_iso: str,
+        grouped_sessions: List[Dict]
+    ):
+        if not grouped_sessions:
+            return
+        conn = self._connect()
+        cursor = conn.cursor()
+        for group in grouped_sessions:
+            cursor.execute(
+                """
+                INSERT INTO grouped_traffic_history (
+                    sample_id, timestamp, username, program, status, session_count,
+                    active_count, inactive_count, total_logical_reads_mb, total_physical_reads_mb,
+                    total_cpu_seconds, machine_count, blocked_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sample_id,
+                    timestamp_iso,
+                    group.get('Username'),
+                    group.get('Program'),
+                    group.get('Status'),
+                    group.get('Total Sessions'),
+                    group.get('Active Sessions'),
+                    group.get('Inactive Sessions'),
+                    group.get('Total Logical Reads (MB)'),
+                    group.get('Total Physical Reads (MB)'),
+                    group.get('Total CPU (seconds)'),
+                    group.get('Machines'),
+                    group.get('Blocked Sessions')
+                )
+            )
+        conn.commit()
+        conn.close()
+    # --- END: insert_grouped_traffic ---
+
+    # --- START: fetch_all_sessions_traffic_history ---
+    def fetch_all_sessions_traffic_history(self, limit: int = 200) -> List[Dict]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT timestamp, sid, serial, username, program, machine, status,
+                   logon_time, last_call_et, logical_reads_mb, physical_reads_mb, cpu_seconds,
+                   wait_event, wait_time, seconds_in_wait, sql_id, blocking_session, os_process
+            FROM all_sessions_traffic_history
+            ORDER BY datetime(timestamp) DESC
+            LIMIT ?
+            """,
+            (limit,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                'timestamp': row[0],
+                'SID': row[1],
+                'Serial#': row[2],
+                'Username': row[3],
+                'Program': row[4],
+                'Machine': row[5],
+                'Status': row[6],
+                'Logon Time': row[7],
+                'Last Call (sec)': row[8],
+                'Logical Reads (MB)': row[9],
+                'Physical Reads (MB)': row[10],
+                'CPU (seconds)': row[11],
+                'Wait Event': row[12],
+                'Wait Time': row[13],
+                'Seconds in Wait': row[14],
+                'SQL ID': row[15],
+                'Blocking Session': row[16],
+                'OS Process': row[17]
+            }
+            for row in rows
+        ]
+    # --- END: fetch_all_sessions_traffic_history ---
+
+    # --- START: fetch_grouped_traffic_history ---
+    def fetch_grouped_traffic_history(self, limit: int = 200) -> List[Dict]:
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT timestamp, username, program, status, session_count,
+                   active_count, inactive_count, total_logical_reads_mb, total_physical_reads_mb,
+                   total_cpu_seconds, machine_count, blocked_count
+            FROM grouped_traffic_history
+            ORDER BY datetime(timestamp) DESC
+            LIMIT ?
+            """,
+            (limit,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                'timestamp': row[0],
+                'Username': row[1],
+                'Program': row[2],
+                'Status': row[3],
+                'Total Sessions': row[4],
+                'Active Sessions': row[5],
+                'Inactive Sessions': row[6],
+                'Total Logical Reads (MB)': row[7],
+                'Total Physical Reads (MB)': row[8],
+                'Total CPU (seconds)': row[9],
+                'Machines': row[10],
+                'Blocked Sessions': row[11]
+            }
+            for row in rows
+        ]
+    # --- END: fetch_grouped_traffic_history ---
+
 
 class OracleMonitorGUI:
     """Oracle Database Session Monitor GUI - Read-only monitoring"""
@@ -1254,6 +1487,52 @@ class OracleMonitorGUI:
         }
         plan_logger.info(json.dumps(log_entry, ensure_ascii=False))
     # --- END: _log_plan_churn ---
+
+    # --- START: _log_traffic_sessions ---
+    def _log_traffic_sessions(
+        self,
+        sessions: List[Dict],
+        sample_meta: Optional[Dict] = None
+    ):
+        """Log all session traffic snapshots to JSON Lines"""
+        if not sessions:
+            return
+
+        log_entry = {
+            'timestamp': datetime.now().isoformat(),
+            'type': 'traffic_all',
+            'session_count': len(sessions),
+            'sessions': sessions
+        }
+
+        if sample_meta:
+            log_entry['sample'] = sample_meta
+
+        traffic_logger.info(json.dumps(log_entry, ensure_ascii=False))
+    # --- END: _log_traffic_sessions ---
+
+    # --- START: _log_grouped_traffic ---
+    def _log_grouped_traffic(
+        self,
+        grouped_rows: List[Dict],
+        sample_meta: Optional[Dict] = None
+    ):
+        """Log grouped traffic aggregates (user/program)"""
+        if not grouped_rows:
+            return
+
+        log_entry = {
+            'timestamp': datetime.now().isoformat(),
+            'type': 'traffic_grouped',
+            'group_count': len(grouped_rows),
+            'groups': grouped_rows
+        }
+
+        if sample_meta:
+            log_entry['sample'] = sample_meta
+
+        traffic_groups_logger.info(json.dumps(log_entry, ensure_ascii=False))
+    # --- END: _log_grouped_traffic ---
 
     # --- START: group_sessions ---
     def group_sessions(self, sessions: List[Dict], group_mode: str = 'user_program') -> List[Dict]:
@@ -2214,6 +2493,153 @@ class OracleMonitorGUI:
             return {}
     # --- END: get_session_by_status ---
 
+    # --- START: get_all_sessions_traffic ---
+    def get_all_sessions_traffic(self) -> List[Dict]:
+        """Get all active and inactive sessions with traffic details - READ ONLY"""
+        if not self.connection:
+            return []
+        
+        try:
+            cursor = self.connection.cursor()
+            try:
+                # READ ONLY query to get all sessions with their traffic metrics
+                stat_logical = self._get_statistic_id(cursor, 'session logical reads')
+                stat_physical = self._get_statistic_id(cursor, 'physical reads')
+                stat_cpu = self._get_statistic_id(cursor, 'CPU used by this session')
+                
+                query = """
+                    SELECT 
+                        s.sid,
+                        s.serial#,
+                        s.username,
+                        s.program,
+                        s.machine,
+                        s.status,
+                        s.logon_time,
+                        s.last_call_et,
+                        ROUND(MAX(CASE WHEN stat.statistic# = :stat_logical THEN stat.value ELSE 0 END) / 1024 / 1024, 2) AS logical_reads_mb,
+                        ROUND(MAX(CASE WHEN stat.statistic# = :stat_physical THEN stat.value ELSE 0 END) / 1024 / 1024, 2) AS physical_reads_mb,
+                        ROUND(MAX(CASE WHEN stat.statistic# = :stat_cpu THEN stat.value ELSE 0 END) / 100, 2) AS cpu_seconds,
+                        s.event,
+                        s.wait_time,
+                        s.seconds_in_wait,
+                        s.sql_id,
+                        s.blocking_session,
+                        p.spid AS os_process
+                    FROM v$session s
+                    LEFT JOIN v$sesstat stat ON s.sid = stat.sid
+                        AND stat.statistic# IN (:stat_logical, :stat_physical, :stat_cpu)
+                    LEFT JOIN v$process p ON s.paddr = p.addr
+                    WHERE s.username IS NOT NULL
+                    GROUP BY s.sid, s.serial#, s.username, s.program, s.machine, s.status, 
+                             s.logon_time, s.last_call_et, s.event, s.wait_time, s.seconds_in_wait, 
+                             s.sql_id, s.blocking_session, p.spid
+                    ORDER BY s.status DESC, logical_reads_mb DESC
+                """
+                
+                cursor.execute(query, {
+                    'stat_logical': stat_logical,
+                    'stat_physical': stat_physical,
+                    'stat_cpu': stat_cpu
+                })
+                
+                sessions = []
+                for row in cursor:
+                    sessions.append({
+                        'SID': row[0],
+                        'Serial#': row[1],
+                        'Username': row[2] or 'N/A',
+                        'Program': row[3] or 'N/A',
+                        'Machine': row[4] or 'N/A',
+                        'Status': row[5] or 'N/A',
+                        'Logon Time': row[6].strftime('%Y-%m-%d %H:%M:%S') if row[6] else 'N/A',
+                        'Last Call (sec)': row[7] or 0,
+                        'Logical Reads (MB)': float(row[8] or 0),
+                        'Physical Reads (MB)': float(row[9] or 0),
+                        'CPU (seconds)': float(row[10] or 0),
+                        'Wait Event': row[11] or 'N/A',
+                        'Wait Time': row[12] or 0,
+                        'Seconds in Wait': row[13] or 0,
+                        'SQL ID': row[14] or 'N/A',
+                        'Blocking Session': row[15] or None,
+                        'OS Process': row[16] or 'N/A'
+                    })
+            finally:
+                cursor.close()
+            
+            return sessions
+            
+        except oracledb.Error as e:
+            st.error(f"Error getting session traffic: {e}")
+            return []
+    # --- END: get_all_sessions_traffic ---
+
+    # --- START: get_sessions_grouped_by_traffic ---
+    def get_sessions_grouped_by_traffic(self) -> List[Dict]:
+        """Group sessions by user and program to identify high traffic sources - READ ONLY"""
+        if not self.connection:
+            return []
+        
+        try:
+            cursor = self.connection.cursor()
+            try:
+                # READ ONLY query to group sessions and aggregate metrics
+                stat_logical = self._get_statistic_id(cursor, 'session logical reads')
+                stat_physical = self._get_statistic_id(cursor, 'physical reads')
+                stat_cpu = self._get_statistic_id(cursor, 'CPU used by this session')
+                
+                query = """
+                    SELECT 
+                        s.username,
+                        s.program,
+                        s.status,
+                        COUNT(*) AS session_count,
+                        COUNT(CASE WHEN s.status = 'ACTIVE' THEN 1 END) AS active_count,
+                        COUNT(CASE WHEN s.status = 'INACTIVE' THEN 1 END) AS inactive_count,
+                        ROUND(SUM(CASE WHEN stat.statistic# = :stat_logical THEN stat.value ELSE 0 END) / 1024 / 1024, 2) AS total_logical_reads_mb,
+                        ROUND(SUM(CASE WHEN stat.statistic# = :stat_physical THEN stat.value ELSE 0 END) / 1024 / 1024, 2) AS total_physical_reads_mb,
+                        ROUND(SUM(CASE WHEN stat.statistic# = :stat_cpu THEN stat.value ELSE 0 END) / 100, 2) AS total_cpu_seconds,
+                        COUNT(DISTINCT s.machine) AS machine_count,
+                        COUNT(CASE WHEN s.blocking_session IS NOT NULL THEN 1 END) AS blocked_count
+                    FROM v$session s
+                    LEFT JOIN v$sesstat stat ON s.sid = stat.sid
+                        AND stat.statistic# IN (:stat_logical, :stat_physical, :stat_cpu)
+                    WHERE s.username IS NOT NULL
+                    GROUP BY s.username, s.program, s.status
+                    ORDER BY total_logical_reads_mb DESC, total_cpu_seconds DESC
+                """
+                
+                cursor.execute(query, {
+                    'stat_logical': stat_logical,
+                    'stat_physical': stat_physical,
+                    'stat_cpu': stat_cpu
+                })
+                
+                grouped = []
+                for row in cursor:
+                    grouped.append({
+                        'Username': row[0] or 'N/A',
+                        'Program': row[1] or 'N/A',
+                        'Status': row[2] or 'N/A',
+                        'Total Sessions': row[3] or 0,
+                        'Active Sessions': row[4] or 0,
+                        'Inactive Sessions': row[5] or 0,
+                        'Total Logical Reads (MB)': float(row[6] or 0),
+                        'Total Physical Reads (MB)': float(row[7] or 0),
+                        'Total CPU (seconds)': float(row[8] or 0),
+                        'Machines': row[9] or 0,
+                        'Blocked Sessions': row[10] or 0
+                    })
+            finally:
+                cursor.close()
+            
+            return grouped
+            
+        except oracledb.Error as e:
+            st.error(f"Error getting grouped session traffic: {e}")
+            return []
+    # --- END: get_sessions_grouped_by_traffic ---
+
     # --- START: get_tablespace_usage ---
     def get_tablespace_usage(self) -> List[Dict]:
         """Fetch tablespace utilization including auto-extend capacity - READ ONLY"""
@@ -2532,6 +2958,20 @@ def main():
                     monitor.history_store.insert_plan_history(sample_id, sample_meta['generated_at'], plan_churn)
             else:
                 plan_churn = []
+            
+            # Store traffic metrics
+            all_traffic = monitor.get_all_sessions_traffic()
+            if all_traffic:
+                monitor._log_traffic_sessions(all_traffic, sample_meta=sample_meta)
+                if monitor.history_store:
+                    monitor.history_store.insert_all_sessions_traffic(sample_id, sample_meta['generated_at'], all_traffic)
+            
+            grouped_traffic = monitor.get_sessions_grouped_by_traffic()
+            if grouped_traffic:
+                monitor._log_grouped_traffic(grouped_traffic, sample_meta=sample_meta)
+                if monitor.history_store:
+                    monitor.history_store.insert_grouped_traffic(sample_id, sample_meta['generated_at'], grouped_traffic)
+            
             blocking_chains = monitor.get_blocking_chains()
             if not blocking_chains:
                 blocking_chains = []
@@ -2687,7 +3127,7 @@ def main():
                     )
             
             # Tabs for detailed information
-            tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14 = st.tabs([
+            tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16 = st.tabs([
                 "🔝 Top Sessions",
                 "🔥 High CPU Sessions",
                 "👥 Grouped Sessions",
@@ -2701,6 +3141,8 @@ def main():
                 "🟥 Redo/Log Writer",
                 "🗂️ Plan Churn",
                 "🖥️ Host Details",
+                "🚦 All Sessions Traffic",
+                "📊 Traffic by User/Program",
                 "🗃️ SQLite History"
             ])
             
@@ -3018,6 +3460,212 @@ def main():
                     st.info("Host metrics not available on this platform.")
 
             with tab14:
+                st.subheader("🚦 All Sessions Traffic (Active & Inactive)")
+                st.markdown("**Real-time view of all database sessions with traffic metrics**")
+                
+                all_sessions = monitor.get_all_sessions_traffic()
+                if all_sessions:
+                    df_all_traffic = pd.DataFrame(all_sessions)
+                    
+                    # Summary metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        total = len(df_all_traffic)
+                        st.metric("Total Sessions", total)
+                    with col2:
+                        active = len(df_all_traffic[df_all_traffic['Status'] == 'ACTIVE'])
+                        st.metric("Active Sessions", active, help="Sessions currently executing")
+                    with col3:
+                        inactive = len(df_all_traffic[df_all_traffic['Status'] == 'INACTIVE'])
+                        st.metric("Inactive Sessions", inactive, help="Sessions idle/waiting")
+                    with col4:
+                        blocked = len(df_all_traffic[df_all_traffic['Blocking Session'].notna()])
+                        st.metric("Blocked Sessions", blocked, help="Sessions being blocked")
+                    
+                    # Filter by status
+                    status_filter = st.multiselect(
+                        "Filter by Status",
+                        options=['ACTIVE', 'INACTIVE'],
+                        default=['ACTIVE', 'INACTIVE'],
+                        help="Select session statuses to display"
+                    )
+                    
+                    if status_filter:
+                        df_filtered = df_all_traffic[df_all_traffic['Status'].isin(status_filter)]
+                    else:
+                        df_filtered = df_all_traffic
+                    
+                    # Show data table
+                    st.dataframe(df_filtered, hide_index=True, width='stretch', height=600)
+                    
+                    # Traffic visualization - Top users by logical reads
+                    st.markdown("### 📈 Traffic Distribution")
+                    top_n = st.slider("Show top N sessions", 5, 20, 10)
+                    
+                    df_top_traffic = df_filtered.nlargest(top_n, 'Logical Reads (MB)')
+                    
+                    fig_traffic = px.bar(
+                        df_top_traffic,
+                        x='SID',
+                        y=['Logical Reads (MB)', 'Physical Reads (MB)'],
+                        title=f"Top {top_n} Sessions by I/O Traffic",
+                        labels={'value': 'MB', 'variable': 'Read Type'},
+                        barmode='group'
+                    )
+                    st.plotly_chart(fig_traffic, width='stretch', key="traffic_sessions_top_io")
+                    
+                    # CPU distribution
+                    df_top_cpu = df_filtered.nlargest(top_n, 'CPU (seconds)')
+                    fig_cpu = px.bar(
+                        df_top_cpu,
+                        x='SID',
+                        y='CPU (seconds)',
+                        color='Status',
+                        title=f"Top {top_n} Sessions by CPU Usage",
+                        labels={'CPU (seconds)': 'CPU Time (seconds)'}
+                    )
+                    st.plotly_chart(fig_cpu, width='stretch', key="traffic_sessions_top_cpu")
+                    
+                    # Status breakdown pie chart
+                    status_counts = df_all_traffic['Status'].value_counts()
+                    fig_pie = px.pie(
+                        values=status_counts.values,
+                        names=status_counts.index,
+                        title="Session Status Distribution"
+                    )
+                    st.plotly_chart(fig_pie, width='stretch', key="traffic_sessions_status")
+                    
+                else:
+                    st.info("No session traffic data available")
+            
+            with tab15:
+                st.subheader("📊 Traffic Grouped by User & Program")
+                st.markdown("**Identify which users and applications are causing high database traffic**")
+                
+                grouped_sessions = monitor.get_sessions_grouped_by_traffic()
+                if grouped_sessions:
+                    df_grouped = pd.DataFrame(grouped_sessions)
+                    
+                    # Summary
+                    st.markdown("### Overview")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        unique_users = df_grouped['Username'].nunique()
+                        st.metric("Unique Users", unique_users)
+                    with col2:
+                        unique_programs = df_grouped['Program'].nunique()
+                        st.metric("Unique Programs", unique_programs)
+                    with col3:
+                        total_sessions = df_grouped['Total Sessions'].sum()
+                        st.metric("Total Sessions", int(total_sessions))
+                    
+                    # Data table with all groups
+                    st.markdown("### 📋 All Groups")
+                    st.dataframe(df_grouped, hide_index=True, width='stretch', height=400)
+                    
+                    # Top traffic generators
+                    st.markdown("### 🔥 Top Traffic Generators")
+                    
+                    top_count = st.slider("Show top N groups", 5, 20, 10, key="traffic_top_n_live")
+                    
+                    # By logical reads
+                    st.markdown("#### By Logical Reads (MB)")
+                    df_top_logical = df_grouped.nlargest(top_count, 'Total Logical Reads (MB)')
+                    
+                    # Create combined label for better visualization
+                    df_top_logical['Group'] = df_top_logical['Username'] + '\n' + df_top_logical['Program']
+                    
+                    fig_logical = px.bar(
+                        df_top_logical,
+                        x='Group',
+                        y='Total Logical Reads (MB)',
+                        color='Total Sessions',
+                        title=f"Top {top_count} User/Program Groups by Logical Reads",
+                        labels={'Total Logical Reads (MB)': 'Logical Reads (MB)', 'Group': 'User / Program'},
+                        color_continuous_scale='Reds'
+                    )
+                    fig_logical.update_xaxes(tickangle=-45)
+                    st.plotly_chart(fig_logical, width='stretch', key="traffic_grouped_logical_live")
+                    
+                    # By CPU usage
+                    st.markdown("#### By CPU Usage (seconds)")
+                    df_top_cpu = df_grouped.nlargest(top_count, 'Total CPU (seconds)')
+                    df_top_cpu['Group'] = df_top_cpu['Username'] + '\n' + df_top_cpu['Program']
+                    
+                    fig_cpu_grouped = px.bar(
+                        df_top_cpu,
+                        x='Group',
+                        y='Total CPU (seconds)',
+                        color='Active Sessions',
+                        title=f"Top {top_count} User/Program Groups by CPU",
+                        labels={'Total CPU (seconds)': 'CPU Time (seconds)', 'Group': 'User / Program'},
+                        color_continuous_scale='Oranges'
+                    )
+                    fig_cpu_grouped.update_xaxes(tickangle=-45)
+                    st.plotly_chart(fig_cpu_grouped, width='stretch', key="traffic_grouped_cpu_live")
+                    
+                    # Session count breakdown
+                    st.markdown("#### By Session Count")
+                    df_top_sessions = df_grouped.nlargest(top_count, 'Total Sessions')
+                    df_top_sessions['Group'] = df_top_sessions['Username'] + '\n' + df_top_sessions['Program']
+                    
+                    fig_sessions = px.bar(
+                        df_top_sessions,
+                        x='Group',
+                        y=['Active Sessions', 'Inactive Sessions'],
+                        title=f"Top {top_count} User/Program Groups by Session Count",
+                        labels={'value': 'Sessions', 'variable': 'Status', 'Group': 'User / Program'},
+                        barmode='stack'
+                    )
+                    fig_sessions.update_xaxes(tickangle=-45)
+                    st.plotly_chart(fig_sessions, width='stretch', key="traffic_grouped_sessions_live")
+                    
+                    # Detailed breakdown by user
+                    st.markdown("### 👤 Breakdown by User")
+                    user_summary = df_grouped.groupby('Username').agg({
+                        'Total Sessions': 'sum',
+                        'Active Sessions': 'sum',
+                        'Inactive Sessions': 'sum',
+                        'Total Logical Reads (MB)': 'sum',
+                        'Total CPU (seconds)': 'sum'
+                    }).reset_index().sort_values('Total Logical Reads (MB)', ascending=False)
+                    
+                    st.dataframe(user_summary, hide_index=True, width='stretch')
+                    
+                    # Pie chart for user distribution
+                    fig_user_pie = px.pie(
+                        user_summary.head(10),
+                        values='Total Sessions',
+                        names='Username',
+                        title='Top 10 Users by Session Count'
+                    )
+                    st.plotly_chart(fig_user_pie, width='stretch', key="traffic_grouped_user_pie_live")
+                    
+                    # Detailed breakdown by program
+                    st.markdown("### 💻 Breakdown by Program")
+                    program_summary = df_grouped.groupby('Program').agg({
+                        'Total Sessions': 'sum',
+                        'Active Sessions': 'sum',
+                        'Inactive Sessions': 'sum',
+                        'Total Logical Reads (MB)': 'sum',
+                        'Total CPU (seconds)': 'sum'
+                    }).reset_index().sort_values('Total Logical Reads (MB)', ascending=False)
+                    
+                    st.dataframe(program_summary, hide_index=True, width='stretch')
+                    
+                    # Pie chart for program distribution
+                    fig_program_pie = px.pie(
+                        program_summary.head(10),
+                        values='Total Sessions',
+                        names='Program',
+                        title='Top 10 Programs by Session Count'
+                    )
+                    st.plotly_chart(fig_program_pie, width='stretch', key="traffic_grouped_program_pie_live")
+                    
+                else:
+                    st.info("No grouped session data available")
+            
+            with tab16:
                 st.subheader("SQLite History Explorer")
                 if monitor.history_store:
                     history_limit = st.slider(
@@ -3165,8 +3813,202 @@ def main():
                                      width='stretch')
                     else:
                         st.info("No plan history stored yet.")
+                    
+                    st.markdown("---")
+                    st.markdown("**All Sessions Traffic History (SQLite)**")
+                    all_traffic_history = monitor.history_store.fetch_all_sessions_traffic_history(history_limit)
+                    if all_traffic_history:
+                        df_traffic_hist = pd.DataFrame(all_traffic_history)
+                        df_traffic_hist['timestamp'] = pd.to_datetime(df_traffic_hist['timestamp'], format='ISO8601')
+                        st.dataframe(df_traffic_hist.sort_values('timestamp', ascending=False),
+                                     hide_index=True,
+                                     width='stretch',
+                                     height=400)
+                        
+                        # Visualization
+                        fig_traffic_hist = px.line(
+                            df_traffic_hist.sort_values('timestamp'),
+                            x='timestamp',
+                            y=['Logical Reads (MB)', 'Physical Reads (MB)'],
+                            color='Username',
+                            title="Historical Session Traffic by User",
+                            labels={'value': 'MB', 'timestamp': 'Time'}
+                        )
+                        st.plotly_chart(fig_traffic_hist, width='stretch')
+                    else:
+                        st.info("No traffic history stored yet.")
+
+                    st.markdown("---")
+                    st.markdown("**Grouped Traffic History (SQLite)**")
+                    grouped_traffic_history = monitor.history_store.fetch_grouped_traffic_history(history_limit)
+                    if grouped_traffic_history:
+                        df_grouped_hist = pd.DataFrame(grouped_traffic_history)
+                        df_grouped_hist['timestamp'] = pd.to_datetime(df_grouped_hist['timestamp'], format='ISO8601')
+                        st.dataframe(df_grouped_hist.sort_values('timestamp', ascending=False),
+                                     hide_index=True,
+                                     width='stretch',
+                                     height=400)
+                        
+                        # Visualization - Top programs by traffic over time
+                        fig_grouped_hist = px.bar(
+                            df_grouped_hist.sort_values(['timestamp', 'Total Logical Reads (MB)'], ascending=[True, False]).head(50),
+                            x='timestamp',
+                            y='Total Logical Reads (MB)',
+                            color='Program',
+                            title="Top Programs by Traffic Over Time",
+                            labels={'Total Logical Reads (MB)': 'Logical Reads (MB)', 'timestamp': 'Time'}
+                        )
+                        st.plotly_chart(fig_grouped_hist, width='stretch')
+                    else:
+                        st.info("No grouped traffic history stored yet.")
                 else:
                     st.info("SQLite history store is not initialized.")
+            
+            # Display alerts if any
+            if alerts:
+                for alert in alerts:
+                    st.warning(f"⚠️ {alert}")
+            
+            # Show log files info
+            with st.expander("📁 Log Files (for AI Analysis)"):
+                st.info("""
+                All monitoring data is logged to multiple files in the `logs/` directory:
+                - **metrics.jsonl** - Structured metrics in JSON Lines format
+                - **metrics.csv** - Metrics in CSV format for easy analysis
+                - **alerts.jsonl** - All alerts and warnings in JSON format
+                - **sessions.jsonl** - Detailed session information
+                - **tablespaces.jsonl** - Tablespace usage snapshots for AI analysis
+                - **tablespace_usage.csv** - Historical tablespace utilization
+                - **io_sessions.jsonl** - Storage I/O heavy sessions
+                - **io_sessions.csv** - CSV export of I/O sessions
+                - **wait_events.jsonl** - Wait event samples
+                - **temp_usage.jsonl** - Temp/undo utilization snapshots
+                - **redo_metrics.jsonl** - Redo/log writer metrics
+                - **plan_churn.jsonl** - Recent SQL plan statistics
+                - **traffic_sessions.jsonl** - Real-time session traffic snapshots
+                - **traffic_groups.jsonl** - Aggregated traffic by user/program
+                - **monitor_history.db** - SQLite database with metrics/tablespace history
+                - **app.log** - Application events and errors
+                - **app_events.jsonl** - Structured application events
+                
+                These files are optimized for AI agent analysis and can be easily parsed.
+                """)
+                if LOG_DIR.exists():
+                    log_files = list(LOG_DIR.glob('*'))
+                    if log_files:
+                        st.write("**Available log files:**")
+                        for log_file in sorted(log_files):
+                            try:
+                                size = log_file.stat().st_size
+                            except FileNotFoundError:
+                                continue
+                            st.write(f"- `{log_file.name}` ({size:,} bytes)")
+            
+            # Auto-refresh if monitoring
+                    st.markdown("### 📋 All Groups")
+                    st.dataframe(df_grouped, hide_index=True, width='stretch', height=400)
+                    
+                    # Top traffic generators
+                    st.markdown("### 🔥 Top Traffic Generators")
+                    
+                    top_count = st.slider("Show top N groups", 5, 20, 10, key="traffic_top_n_history")
+                    
+                    # By logical reads
+                    st.markdown("#### By Logical Reads (MB)")
+                    df_top_logical = df_grouped.nlargest(top_count, 'Total Logical Reads (MB)')
+                    
+                    # Create combined label for better visualization
+                    df_top_logical['Group'] = df_top_logical['Username'] + '\n' + df_top_logical['Program']
+                    
+                    fig_logical = px.bar(
+                        df_top_logical,
+                        x='Group',
+                        y='Total Logical Reads (MB)',
+                        color='Total Sessions',
+                        title=f"Top {top_count} User/Program Groups by Logical Reads",
+                        labels={'Total Logical Reads (MB)': 'Logical Reads (MB)', 'Group': 'User / Program'},
+                        color_continuous_scale='Reds'
+                    )
+                    fig_logical.update_xaxes(tickangle=-45)
+                    st.plotly_chart(fig_logical, width='stretch', key="traffic_grouped_logical_history")
+                    
+                    # By CPU usage
+                    st.markdown("#### By CPU Usage (seconds)")
+                    df_top_cpu = df_grouped.nlargest(top_count, 'Total CPU (seconds)')
+                    df_top_cpu['Group'] = df_top_cpu['Username'] + '\n' + df_top_cpu['Program']
+                    
+                    fig_cpu_grouped = px.bar(
+                        df_top_cpu,
+                        x='Group',
+                        y='Total CPU (seconds)',
+                        color='Active Sessions',
+                        title=f"Top {top_count} User/Program Groups by CPU",
+                        labels={'Total CPU (seconds)': 'CPU Time (seconds)', 'Group': 'User / Program'},
+                        color_continuous_scale='Oranges'
+                    )
+                    fig_cpu_grouped.update_xaxes(tickangle=-45)
+                    st.plotly_chart(fig_cpu_grouped, width='stretch', key="traffic_grouped_cpu_history")
+                    
+                    # Session count breakdown
+                    st.markdown("#### By Session Count")
+                    df_top_sessions = df_grouped.nlargest(top_count, 'Total Sessions')
+                    df_top_sessions['Group'] = df_top_sessions['Username'] + '\n' + df_top_sessions['Program']
+                    
+                    fig_sessions = px.bar(
+                        df_top_sessions,
+                        x='Group',
+                        y=['Active Sessions', 'Inactive Sessions'],
+                        title=f"Top {top_count} User/Program Groups by Session Count",
+                        labels={'value': 'Sessions', 'variable': 'Status', 'Group': 'User / Program'},
+                        barmode='stack'
+                    )
+                    fig_sessions.update_xaxes(tickangle=-45)
+                    st.plotly_chart(fig_sessions, width='stretch', key="traffic_grouped_sessions_history")
+                    
+                    # Detailed breakdown by user
+                    st.markdown("### 👤 Breakdown by User")
+                    user_summary = df_grouped.groupby('Username').agg({
+                        'Total Sessions': 'sum',
+                        'Active Sessions': 'sum',
+                        'Inactive Sessions': 'sum',
+                        'Total Logical Reads (MB)': 'sum',
+                        'Total CPU (seconds)': 'sum'
+                    }).reset_index().sort_values('Total Logical Reads (MB)', ascending=False)
+                    
+                    st.dataframe(user_summary, hide_index=True, width='stretch')
+                    
+                    # Pie chart for user distribution
+                    fig_user_pie = px.pie(
+                        user_summary.head(10),
+                        values='Total Sessions',
+                        names='Username',
+                        title='Top 10 Users by Session Count'
+                    )
+                    st.plotly_chart(fig_user_pie, width='stretch', key="traffic_grouped_user_pie_history")
+                    
+                    # Detailed breakdown by program
+                    st.markdown("### 💻 Breakdown by Program")
+                    program_summary = df_grouped.groupby('Program').agg({
+                        'Total Sessions': 'sum',
+                        'Active Sessions': 'sum',
+                        'Inactive Sessions': 'sum',
+                        'Total Logical Reads (MB)': 'sum',
+                        'Total CPU (seconds)': 'sum'
+                    }).reset_index().sort_values('Total Logical Reads (MB)', ascending=False)
+                    
+                    st.dataframe(program_summary, hide_index=True, width='stretch')
+                    
+                    # Pie chart for program distribution
+                    fig_program_pie = px.pie(
+                        program_summary.head(10),
+                        values='Total Sessions',
+                        names='Program',
+                        title='Top 10 Programs by Session Count'
+                    )
+                    st.plotly_chart(fig_program_pie, width='stretch', key="traffic_grouped_program_pie_history")
+                    
+                else:
+                    st.info("No grouped session data available")
             
             # Display alerts if any
             if alerts:
